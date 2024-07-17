@@ -148,7 +148,7 @@ def match_tensors_permute_MHA(
     default="cpu",
     help="Device to compute on (default: cpu)",
 )
-def main(model1_ft, model2_ft, model_path, out_path, absval, device):
+def main(model1_ft, model2_ft, model_path, out_path, absval, store_correlation, device):
     os.makedirs(out_path, exist_ok=True)
 
     model = ModelReference.model_validate(model_path)
