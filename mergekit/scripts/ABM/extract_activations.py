@@ -78,6 +78,7 @@ It tries to map input/output spaces to activation maps
     "--dataset", "-d", required=True, type=str, help="Dataset to use for activations"
 )
 @click.option("--out-path", "-o", required=True, type=str, help="Output model path")
+@click.option("--output-name", "-n", required=True,  type=str, help="Output name for the activations")
 @click.option("--batch-size", "-b", type=int, default=2, help="Batch size")
 @click.option(
     "--dataset-size",
@@ -97,6 +98,16 @@ It tries to map input/output spaces to activation maps
     default=False,
     help="use Chat template for inference",
 )
+@click.option(
+    "--split-residual/--no-split-residual",
+    default=False,
+    help="split residual space layer wise",
+)
+@click.option(
+    "--check-residual/--no-check-residual",
+    default=False,
+    help="check residual space by calculating subsequent layer cosine similarity and graphing it",
+)
 @click.option("--max-length", "-l", type=int, default=512, help="Max length")
 @click.option("--dtype", type=str, default=None, help="Data type to convert weights to")
 @click.option(
@@ -115,11 +126,14 @@ def main(
     dataset: str,
     dataset_column: str,
     out_path: str,
+    output_name: str,
     batch_size: int,
     max_length: int,
     dataset_size: Optional[int],
     dataset_subset: Optional[str],
     chat_template: Optional[bool],
+    split_residual: Optional[bool],
+    check_residual: Optional[bool],
     dtype: Optional[str],
     device: Optional[str],
     ignore_spaces: Optional[List[str]],
@@ -308,14 +322,30 @@ def main(
                 remove_pads(attention_mask, hidden_state)
                 for hidden_state in outputs.hidden_states
             ]
-            hidden_states = torch.stack(outputs.hidden_states, dim=1)
 
-            if residual_space not in feature_storage:
-                feature_storage[residual_space] = hidden_states
+            # if split residual space layer wise flag is set, store hidden states layer wise
+            if split_residual:
+                for i, hidden_state in enumerate(hidden_states):
+                    if residual_space + f"_{i}" not in feature_storage:
+                        feature_storage[residual_space + f"_{i}"] = hidden_state
+                    else:
+                        feature_storage[residual_space + f"_{i}"] = torch.cat(
+                            (
+                                feature_storage[residual_space + f"_{i}"],
+                                hidden_state,
+                            ),
+                            dim=0,
+                        )
+                
             else:
-                feature_storage[residual_space] = torch.cat(
-                    (feature_storage[residual_space], hidden_states), dim=0
-                )
+                hidden_states = torch.stack(outputs.hidden_states, dim=1)
+
+                if residual_space not in feature_storage:
+                    feature_storage[residual_space] = hidden_states
+                else:
+                    feature_storage[residual_space] = torch.cat(
+                        (feature_storage[residual_space], hidden_states), dim=0
+                    )
 
             for space_name, v in storage_dict.items():
                 if space_name not in feature_storage:
@@ -334,17 +364,46 @@ def main(
         if v is not None:
             logging.info(f"{k}: Shape: {v.shape}")
 
+    if check_residual:
+        results = {}
+        for i in range(32):
+            name_ = residual_space + f"_{i}"
+            name_2 =  residual_space + f"_{i+1}"
+            layer_hs = feature_storage.get(name_)
+            layer_hs_2 = feature_storage.get(name_2)
+            results[i] = [torch.nn.functional.cosine_similarity(layer_hs[j], layer_hs_2[j], dim=1).mean().item() for j in range(layer_hs.shape[0])]
+
+        # print formatted output
+        for i in range(32):
+            print(f"Layer {i} -> Layer {i+1}: {results[i]}")
+
+        # plot the cosine similarity for each prompt as a new line
+        import matplotlib.pyplot as plt
+        prompt_to_plot = {}
+        for i in range(32):
+            for j in range(len(results[i])):
+                if j not in prompt_to_plot:
+                    prompt_to_plot[j] = []
+                prompt_to_plot[j].append(results[i][j])
+        # plot prompt to plot
+        for k, v in prompt_to_plot.items():
+            plt.plot(v, label=f"Prompt {k}")
+        plt.legend()
+        plt.savefig(f"cosine_similarity_{output_name}.png")
+
+
     abs_path = os.path.abspath(model_path)
     if os.path.exists(abs_path):
         model_path = abs_path
 
     model_path = model_path.replace("/", "_")
+    # TODO: this is not being saved anywhere
 
     # create output directory
     os.makedirs(out_path, exist_ok=True)
 
     save_file(
-        feature_storage, os.path.join(out_path, f"{model_path}_features.safetensor")
+        feature_storage, os.path.join(out_path, f"{output_name}.safetensor")
     )
 
 
