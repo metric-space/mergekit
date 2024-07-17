@@ -225,7 +225,7 @@ def main(model1_ft, model2_ft, model_path, out_path, absval, store_correlation, 
 
             errors = {}
             for i in range(len(col_indices)):
-                k_ = col_ind[indices]
+                k_ = col_indices[indices]
                 if  i != k_:
                     errors[i] = np.abs(k_ - i)
             if np.sum(list(errors.values())) > 0:
