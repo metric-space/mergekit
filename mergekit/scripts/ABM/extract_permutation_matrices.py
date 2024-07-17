@@ -46,7 +46,7 @@ def match_tensors_permute(
     merge = torch.cat(mats, dim=0)
     merge = merge / (merge.sum(dim=0, keepdim=True) + 1e-5)
 
-    return merge.T, unmerge
+    return merge.T, unmerge, col_ind
 
 
 def match_tensors_permute_MHA(
@@ -136,6 +136,12 @@ def match_tensors_permute_MHA(
     help="Use absolute value on correlation matrices/submatrices while calculating merge/unmerge matrices",
 )
 @click.option(
+    "--store-correlation/--no-store-correlation",
+    required=False,
+    default=False,
+    help="Store correlation matrices",
+)
+@click.option(
     "--device",
     "-d",
     type=str,
@@ -197,6 +203,12 @@ def main(model1_ft, model2_ft, model_path, out_path, absval, device):
         )
 
         correlation_matrix = calc_correlation_matrix(concatenated_feature)
+        if store_correlation:
+            safetensors.torch.save_file(
+                {feature_space: correlation_matrix.contiguous()},
+                f"{out_path}/correlations/{feature_space}_correlation.safetensor",
+            )
+
 
         if feature_space in (kq_spaces + v_spaces):
             merge, unmerge = match_tensors_permute_MHA(
@@ -206,10 +218,21 @@ def main(model1_ft, model2_ft, model_path, out_path, absval, device):
             )
 
         else:
-            merge, unmerge = match_tensors_permute(
+            merge, unmerge, col_indices = match_tensors_permute(
                 correlation_matrix=correlation_matrix,
                 absval=absval,
             )
+
+            errors = {}
+            for i in range(len(col_indices)):
+                k_ = col_ind[indices]
+                if  i != k_:
+                    errors[i] = np.abs(k_ - i)
+            if np.sum(list(errors.values())) > 0:
+                print(f"Feature space: {feature_space} -> {np.mean(list(errors.values()))}")
+            else:
+                print(f"Feature space: {feature_space} -> No errors")
+
 
         safetensors.torch.save_file(
             {feature_space: merge.contiguous()},
