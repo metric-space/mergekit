@@ -198,9 +198,17 @@ def main(model1_ft, model2_ft, model_path, out_path, absval, store_correlation, 
     model2_features.pop("attention_mask")
 
     for feature_space in model1_features.keys():
-        concatenated_feature = torch.cat(
-            (model1_features[feature_space], model2_features[feature_space]), dim=-1
-        )
+
+        vec1 = model1_features[feature_space]
+        vec2 = model2_features[feature_space]
+
+        # HACK
+        if feature_space.startswith("running"):
+            cos_sims = [torch.nn.functional.cosine_similarity(vec1[j], vec2[j], dim=1).mean().item() for j in range(vec1.shape[0])]
+            print(f"Feature space: {feature_space} -> {cos_sims}")
+
+
+        concatenated_feature = torch.cat((vec1, vec2), dim=-1)
 
         correlation_matrix = calc_correlation_matrix(concatenated_feature)
         if store_correlation:
@@ -225,7 +233,7 @@ def main(model1_ft, model2_ft, model_path, out_path, absval, store_correlation, 
 
             errors = {}
             for i in range(len(col_indices)):
-                k_ = col_indices[indices]
+                k_ = col_indices[i]
                 if  i != k_:
                     errors[i] = np.abs(k_ - i)
             if np.sum(list(errors.values())) > 0:
