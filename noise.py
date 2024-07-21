@@ -33,6 +33,13 @@ from mergekit.options import MergeOptions, add_merge_options
     default="cuda",
     help="Device to compute on (default: cuda)",
 )
+@click.option(
+    "--noise-level",
+    "-n",
+    type=float,
+    default=0.1,
+    help="Noise level to add to the weights",
+    )
 @add_merge_options
 def main(
     model_path: str,
@@ -81,13 +88,21 @@ def main(
 
         if weight_info.input_space not in unmerge_internal_cache:
             unmerge_matrix = torch.eye(original_w.shape[0], device=device)
+            unmerge_matrix = unmerge_matrix + torch.randn_like(unmerge_matrix) * merge_options.noise_level
+
             unmerge_internal_cache[weight_info.input_space] = unmerge_matrix
+            # calculate inverse of unmerge_matrix
+            merge_matrix = torch.inverse(unmerge_matrix)
         else:
             unmerge_matrix = unmerge_internal_cache[weight_info.input_space]
 
         if weight_info.output_space not in merge_internal_cache:
             merge_matrix = torch.eye(original_w.shape[1], device=device)
+            merge_matrix = merge_matrix + torch.randn_like(merge_matrix) * merge_options.noise_level
             merge_internal_cache[weight_info.output_space] = merge_matrix
+
+            unmerge_matrix = torch.inverse(merge_matrix)
+            unmerge_internal_cache[weight_info.output_space] = unmerge_matrix
         else:
             merge_matrix = merge_internal_cache[weight_info.output_space]
 
