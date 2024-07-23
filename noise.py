@@ -17,8 +17,6 @@ from mergekit.options import MergeOptions, add_merge_options
 
 @click.command("mergekit-activation-based-merge")
 @click.argument("model_path", type=str)
-@click.argument("secondary_model_path", type=str)
-@click.argument("merge_unmerge_directory", type=str)
 @click.option("--out-path", "-o", required=True, type=str, help="Output model path")
 @click.option(
     "--dtype",
@@ -43,15 +41,13 @@ from mergekit.options import MergeOptions, add_merge_options
 @add_merge_options
 def main(
     model_path: str,
-    secondary_model_path,
-    merge_unmerge_directory: str,
     out_path: str,
     dtype: Optional[str],
     device: Optional[str],
-    merge_options: MergeOptions,
+    noise_level: Optional[float],
+    merge_options,
 ):
     model = ModelReference.model_validate(model_path)
-    secondary_model = ModelReference.model_validate(secondary_model_path)
 
     dtype = dtype_from_name(dtype) if dtype else None
 
@@ -59,7 +55,7 @@ def main(
     cache.lazy_unpickle = merge_options.lazy_unpickle
     cache.hf_cache_dir = merge_options.transformers_cache
 
-    for m in tqdm.tqdm([model, secondary_model], desc="Preparing models"):
+    for m in tqdm.tqdm([model], desc="Preparing models"):
         cache.get(m)
 
     writer = TensorWriter(
@@ -86,38 +82,56 @@ def main(
 
         merge_matrix, unmerge_matrix = None, None
 
-        if weight_info.input_space not in unmerge_internal_cache:
-            unmerge_matrix = torch.eye(original_w.shape[0], device=device)
-            unmerge_matrix = unmerge_matrix + torch.randn_like(unmerge_matrix) * merge_options.noise_level
+        print(f"{weight_info} with shape {original_w.shape}")
 
-            unmerge_internal_cache[weight_info.input_space] = unmerge_matrix
-            # calculate inverse of unmerge_matrix
-            merge_matrix = torch.inverse(unmerge_matrix)
-        else:
-            unmerge_matrix = unmerge_internal_cache[weight_info.input_space]
+        if weight_info.input_space:
+            if weight_info.input_space not in unmerge_internal_cache:
+                if weight_info.is_embed:
+                    unmerge_matrix = torch.eye(original_w.shape[1], device=device)
+                else:
+                    unmerge_matrix = torch.eye(original_w.shape[0], device=device)
+                unmerge_matrix = unmerge_matrix + torch.randn_like(unmerge_matrix).diag().diagflat() * noise_level
 
-        if weight_info.output_space not in merge_internal_cache:
-            merge_matrix = torch.eye(original_w.shape[1], device=device)
-            merge_matrix = merge_matrix + torch.randn_like(merge_matrix) * merge_options.noise_level
-            merge_internal_cache[weight_info.output_space] = merge_matrix
+                # calculate inverse of unmerge_matrix
+                merge_internal_cache[weight_info.input_space] = torch.inverse(unmerge_matrix).to(dtype=dtype)
+                unmerge_matrix = unmerge_matrix.to(dtype=dtype)
+                unmerge_internal_cache[weight_info.input_space] = unmerge_matrix
 
-            unmerge_matrix = torch.inverse(merge_matrix)
-            unmerge_internal_cache[weight_info.output_space] = unmerge_matrix
-        else:
-            merge_matrix = merge_internal_cache[weight_info.output_space]
+                print(f"for {weight_info.input_space} IS  U: {unmerge_matrix.shape} and it's inverse: {merge_internal_cache[weight_info.input_space].shape}")
+            else:
+                unmerge_matrix = unmerge_internal_cache[weight_info.input_space]
+
+        if weight_info.output_space:
+            if weight_info.output_space not in merge_internal_cache:
+                if weight_info.is_embed:
+                    merge_matrix = torch.eye(original_w.shape[1], device=device)
+                else:
+                    merge_matrix = torch.eye(original_w.shape[0], device=device)
+
+                merge_matrix = merge_matrix + torch.randn_like(merge_matrix).diag().diagflat() * noise_level
+
+                unmerge_internal_cache[weight_info.output_space] = torch.inverse(merge_matrix).to(dtype=dtype)
+                merge_matrix = merge_matrix.to(dtype=dtype)
+                merge_internal_cache[weight_info.output_space] = merge_matrix
+
+                print(f"for {weight_info.output_space} OS  M: {merge_matrix.shape} and it's inverse: {unmerge_internal_cache[weight_info.output_space].shape}")
+            else:
+                merge_matrix = merge_internal_cache[weight_info.output_space]
 
         if dtype is not None:
             original_w = original_w.to(dtype=dtype)
 
         w = torch.clone(original_w)
 
-        if not merge_matrix and not unmerge_matrix:
+        if (merge_matrix is None and unmerge_matrix is None):
             logging.warning(
                 f"❌ Weight {weight_info.name} for model 1 and model 2 has no merge or unmerge matrix"
             )
 
         if merge_matrix is not None:
             if weight_info.is_embed:
+                print(w.dtype)
+                print(merge_matrix.dtype)
                 w = (merge_matrix @ w.T).T  # this could also be  merge_matrix.T @ w  by matrix transpose laws
             else:
                 w = merge_matrix @ w
